@@ -1,5 +1,5 @@
 from os.path import join
-
+import mysql.connector
 from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 from telegram.ext import (
     Application,
@@ -7,7 +7,7 @@ from telegram.ext import (
     MessageHandler,
     CallbackQueryHandler,
     filters,
-    CallbackContext,
+    CallbackContext, ContextTypes,
 )
 from telegram.error import TimedOut, NetworkError
 import logging
@@ -21,10 +21,90 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+TOKEN = "7898073903:AAGp4hDifYI61gWWpth1P8TGYdLmYBzPFb8"
+
+ADMIN_USERNAME = "AndalusSoftwares"
+ADMIN_CHAT_ID = None
+
+MYSQL_CONFIG = {
+    "host": "localhost",  # XAMPP MySQL host
+    "user": "root",  # Default XAMPP MySQL username
+    "password": "",  # Default XAMPP MySQL password (leave empty)
+    "database": "sheref_media_bot",  # Your database name
+}
+
+
+def init_db():
+    try:
+        conn = mysql.connector.connect(**MYSQL_CONFIG)
+        cursor = conn.cursor()
+        if conn.is_connected():
+            print("✅ Connected to the database.")
+
+        cursor.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id BIGINT PRIMARY KEY,
+                    username VARCHAR(255),
+                    first_name VARCHAR(255),
+                    last_name VARCHAR(255),
+                    interactions INT DEFAULT 1
+                )
+            """)
+        conn.commit()
+        print("✅ Table 'users' created or already exists.")
+        cursor.close()
+        conn.close()
+        print("✅ Database initialized successfully.")
+    except Exception as e:
+        print(f"❌ Error initializing database: {e}")
+
+
+def track_user(update: Update):
+    # Check if the update is from a message or a callback query
+    if update.message:
+        user = update.message.from_user
+    elif update.callback_query:
+        user = update.callback_query.from_user
+    else:
+        print("❌ Unsupported update type. Cannot track user.")
+        return
+    conn = None
+    cursor = None
+
+    try:
+        # Connect to the database
+        conn = mysql.connector.connect(**MYSQL_CONFIG)
+        cursor = conn.cursor()
+
+        # Insert or update user data
+        cursor.execute("""
+            INSERT INTO users (user_id, username, first_name, last_name, interactions)
+            VALUES (%s, %s, %s, %s, 1)
+            ON DUPLICATE KEY UPDATE
+                username = VALUES(username),
+                first_name = VALUES(first_name),
+                last_name = VALUES(last_name),
+                interactions = interactions + 1
+        """, (user.id, user.username, user.first_name, user.last_name))
+
+        # Commit the transaction
+        conn.commit()
+        print(f"✅ User {user.id} tracked successfully.")
+
+    except Exception as e:
+        print(f"❌ Database error: {e}")
+    finally:
+        # Close the cursor and connection
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
 
 # Welcome message and buttons
 async def start(update: Update, context: CallbackContext) -> None:
     # Check if the update is from a callback query (e.g., "Back" button)
+    track_user(update)
     if update.callback_query:
         query = update.callback_query
         chat_id = query.message.chat.id
@@ -47,7 +127,7 @@ async def start(update: Update, context: CallbackContext) -> None:
                     f"‼️ <b>ልብ ይበሉ ይህንን የኦንላይን ስራ ለመሥራት ይህንን ቦት ብቻ ይጠቀሙ!</b>"
                     f"\n\n እባክዎ የሚፈልጉትን በመምረጥ ይቀጥሉ:")
     buttons = [
-        ['አዲስ ከሆኑ እዚህ ይጫኑ'],
+        ['አዲስ ከሆኑ እዚህ ጠቅ ያድርጉ'],
         ['💰 ፖይንት/ኮይን መስራት'],
         ['level ማሳደግ', 'ኤጀንሲ ለመመዝገብ'],
         ['ኤጀንሲ', "live ለመግባት", 'other/ሌሎች']
@@ -56,10 +136,57 @@ async def start(update: Update, context: CallbackContext) -> None:
     await context.bot.send_message(chat_id=chat_id, text=welcome_text, reply_markup=reply_markup, parse_mode="HTML")
 
 
+# Command to get user statistics
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    track_user(update)
+    # Check if the command is sent by the admin
+    user = update.message.from_user
+    conn = mysql.connector.connect(**MYSQL_CONFIG)
+    cursor = conn.cursor()
+
+    # Get total unique users and interactions
+    cursor.execute("SELECT COUNT(*), SUM(interactions) FROM users")
+    result = cursor.fetchone()
+    unique_users = result[0]
+    total_interactions = result[1]
+
+    # Get user-specific interactions
+    cursor.execute("SELECT interactions FROM users WHERE user_id = %s", (user.id,))
+    user_interactions = cursor.fetchone()
+    user_interactions = user_interactions[0] if user_interactions else 0
+
+    conn.close()
+
+    # Check if the user is the admin
+    is_admin = (user.username == ADMIN_USERNAME) or (user.id == ADMIN_CHAT_ID)
+
+    # Prepare the response message
+    if is_admin:
+        message = (
+            f"+---------------------------------------+\n"
+            f"| 📊  Admin Bot Statistics  |\n"
+            f"+---------------------------------------+\n"
+            f"👤 Unique Users: {unique_users}\n"
+            f"------------------------------------------\n"
+            f"🔄 Total Interactions: {total_interactions}\n"
+            f"------------------------------------------\n"
+            f"👤 Your Interactions: {user_interactions}\n"
+            f"------------------------------------------\n"
+
+        )
+    else:
+        message = (
+            f"📊 ---Your Activities---\n\n"
+            f"👤 Interactions: {user_interactions}"
+        )
+
+    await update.message.reply_text(message)
+
+
 # Show buttons without welcome text
 async def show_buttons(update: Update, context: CallbackContext) -> None:
     buttons = [
-        ['አዲስ ከሆኑ እዚህ ይጫኑ'],
+        ['አዲስ ከሆኑ እዚህ ጠቅ ያድርጉ'],
         ['💰 ፖይንት/ኮይን መስራት'],
         ['level ማሳደግ', 'ኤጀንሲ ለመመዝገብ'],
         ['ኤጀንሲ', "live ለመግባት", 'other/ሌሎች']
@@ -70,10 +197,11 @@ async def show_buttons(update: Update, context: CallbackContext) -> None:
 
 # Handle button responses
 async def handle_message(update: Update, context: CallbackContext) -> None:
+    track_user(update)
     user_choice = update.message.text
     full_name = context.user_data.get("full_name", "User")
 
-    if user_choice == 'አዲስ ከሆኑ እዚህ ይጫኑ':
+    if user_choice == 'አዲስ ከሆኑ እዚህ ጠቅ ያድርጉ':
         app_link = """
     (a) https://aaaonline.info/WDDYkC
     (b) https://aaaonline.info/6AMfj2
@@ -124,6 +252,7 @@ async def handle_message(update: Update, context: CallbackContext) -> None:
 
 # Handle callback query for inline buttons
 async def handle_callback_query(update: Update, context: CallbackContext) -> None:
+    track_user(update)
     query = update.callback_query
     await query.answer()  # Acknowledge the callback query
 
@@ -1145,15 +1274,17 @@ async def error_handler(update: Update, context: CallbackContext) -> None:
 
 # Main function to start the bot
 def main() -> None:
+    init_db()
     custom_request = HTTPXRequest(
         connect_timeout=20.0,  # Increase the connection timeout
         read_timeout=40.0,  # Increase the read timeout
     )
-    application = Application.builder().token("7898073903:AAGp4hDifYI61gWWpth1P8TGYdLmYBzPFb8").request(
+    application = Application.builder().token(TOKEN).request(
         custom_request).build()
 
     # Add handlers
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("stats", stats))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(handle_callback_query))
 
@@ -1161,6 +1292,7 @@ def main() -> None:
     application.add_error_handler(error_handler)
 
     # Start the bot
+    print("🤖 Bot is running...")
     application.run_polling()
 
 
